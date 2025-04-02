@@ -36,7 +36,7 @@ python -m spacy download en_core_web_trf
 
 ### Running the API
 ```
-uvicorn res:app --host 0.0.0.0 --port 8000 --reload
+uvicorn tes:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 ## Testing the API using cURL
