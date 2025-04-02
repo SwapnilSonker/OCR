@@ -1,0 +1,8 @@
+easyocr
+spacy
+python-dateutil
+spacy[transformers]
+python-multipart
+uvicorn
+fastapi
+[python -m spacy download en_core_web_trf]
