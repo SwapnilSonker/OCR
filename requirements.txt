@@ -5,5 +5,4 @@ spacy[transformers]
 python-multipart
 uvicorn
 fastapi
-[python -m spacy download en_core_web_trf]
 gunicorn
