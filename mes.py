@@ -291,10 +291,29 @@ def process_event_image(image_bytes, verbose=False):
         # --------- TIME EXTRACTION ---------
         # Precompile time patterns
         time_patterns = [
-            re.compile(r'\b(?:\d{1,2}:\d{2}\s*(?:am|pm|AM|PM|a\.m\.|p\.m\.))\b'),
-            re.compile(r'\b(?:\d{1,2}\s*(?:am|pm|AM|PM|a\.m\.|p\.m\.))\b'),
-            re.compile(r'\b(?:at|from)\s+\d{1,2}(?:[:.]?\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.|hours|hrs)?\b', re.IGNORECASE),
-            re.compile(r'\b\d{1,2}(?:[:.]?\d{2})?\s*(?:to|till|until|-)\s*\d{1,2}(?:[:.]?\d{2})?\s*(?:am|pm|a\.m\.|p\.m\.|hours|hrs)?\b', re.IGNORECASE)
+            # Matches a single time with optional AM/PM (e.g., 6am, 6:30pm, 6 AM, 6:30 PM)
+            re.compile(r'\b(?:\d{1,2}[:.]?\d{2})\s*(?:am|pm|AM|PM|a\.m\.|p\.m\.|a\.m|p\.m)\b', re.IGNORECASE),
+            
+            # Matches single times with AM/PM (e.g., 6am, 6 AM)
+            re.compile(r'\b(?:\d{1,2})\s*(?:am|pm|AM|PM|a\.m\.|p\.m\.|a\.m|p\.m)\b', re.IGNORECASE),
+            
+            # Matches times with 'at', 'from' (e.g., at 6am, from 6:30pm, from 8:00 AM)
+            re.compile(r'\b(?:at|from)\s+\d{1,2}(?:[:.]?\d{2})?\s*(?:am|pm|AM|PM|a\.m\.|p\.m\.|a\.m|p\.m)?\b', re.IGNORECASE),
+            
+            # Matches time ranges like '6am-8pm', '6:30am to 8:30pm', '6am till 8pm', '6am to 8pm'
+            re.compile(r'\b(?:\d{1,2}[:.]?\d{2})\s*(?:am|pm|AM|PM|a\.m\.|p\.m\.|a\.m|p\.m)\s*(?:-|to|till|until)\s*\d{1,2}[:.]?\d{2}\s*(?:am|pm|AM|PM|a\.m\.|p\.m\.|a\.m|p\.m)\b', re.IGNORECASE),
+            
+            # Matches time ranges like '6am-8pm', '4am to 8pm', '4am till 8pm' (without spaces)
+            re.compile(r'\b(?:\d{1,2})\s*(?:am|pm|AM|PM|a\.m\.|p\.m)\s*(?:-|to|till|until)?\s*\d{1,2}\s*(?:am|pm|AM|PM|a\.m\.|p\.m)\b', re.IGNORECASE),
+            
+            # Matches time ranges without space (e.g., 6amto8pm, 4amto8pm)
+            re.compile(r'\b(?:\d{1,2})\s*(?:am|pm|AM|PM|a\.m\.|p\.m)\s*(?:to|till|until)?\s*(?:\d{1,2})\s*(?:am|pm|AM|PM|a\.m\.|p\.m)\b', re.IGNORECASE),
+
+            # Matches time ranges with no spaces, minutes, and AM/PM (e.g., 6:30am-8:30pm, 6:30am to 8:30pm)
+            re.compile(r'\b(?:\d{1,2}[:.]?\d{2})\s*(?:am|pm|AM|PM|a\.m\.|p\.m)\s*(?:-|to|till|until)?\s*(?:\d{1,2}[:.]?\d{2})\s*(?:am|pm|AM|PM|a\.m\.|p\.m)\b', re.IGNORECASE),
+            
+            # Match time ranges like '6am to 8pm', '6am-8pm' including cases with multiple spaces
+            re.compile(r'\b(?:\d{1,2})\s*(?:am|pm|AM|PM|a\.m\.|p\.m)\s*(?:\s*[-to\s*]*|[-\s*]*)(?:\d{1,2})\s*(?:am|pm|AM|PM|a\.m\.|p\.m)\b', re.IGNORECASE)
         ]
         
         for pattern in time_patterns:
@@ -372,11 +391,32 @@ def process_event_image(image_bytes, verbose=False):
         # --------- CONTACT INFORMATION ---------
         # Precompile phone patterns
         phone_patterns = [
-            re.compile(r'\+\d{1,4}[-.\s]?\d{2,5}[-.\s]?\d{2,5}[-.\s]?\d{2,5}'),
-            re.compile(r'\+\d{1,4}[-.\s]?\(?\d{2,5}\)?[-.\s]?\d{3,5}[-.\s]?\d{3,5}'),
-            re.compile(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}'),
-            re.compile(r'\+\d{1,4}[-.\s]?\d{4,6}[-.\s]?\d{4,6}'),
-            re.compile(r'\(?\d{3}\)?[-.\s]?\d{4}[-.\s]?\d{4}')
+            # International phone number with optional country code, parentheses, and separators (hyphen, dot, space)
+            re.compile(r'\+\d{1,4}[-.\s]?\(?\d{1,5}\)?[-.\s]?\d{1,5}[-.\s]?\d{1,5}'),  # +<code> (xxx) xxx xxx or +<code> xxx xxx xxx
+            
+            # Standard phone number format with optional parentheses around the area code
+            re.compile(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}'),  # (xxx) xxx-xxxx or xxx-xxx-xxxx
+            
+            # International phone number with country code and an optional area code in parentheses
+            re.compile(r'\+\d{1,4}[-.\s]?\(?\d{2,5}\)?[-.\s]?\d{3,5}[-.\s]?\d{3,5}'),  # +<code> (xxx) xxx xxx or +<code> xxx xxx xxx
+            
+            # Simple phone number with no parentheses or country code (local format)
+            re.compile(r'\d{3}[-.\s]?\d{3}[-.\s]?\d{3}'),  # 222 333 333 or 222-333-333 or 222.333.333
+            
+            # Another format for phone numbers with parentheses around the area code and optional separators
+            re.compile(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{3}'),  # (333) 333 333
+            
+            # Optional international phone numbers with or without separators and area code (e.g., +1 555 123 4567)
+            re.compile(r'\+\d{1,4}[-.\s]?\(?\d{1,5}\)?[-.\s]?\d{1,5}[-.\s]?\d{1,5}'),  # +1 555 123 4567 or +1(555)1234567
+            
+            # Match numbers with 4-digit area codes with optional separators
+            re.compile(r'\(?\d{4}\)?[-.\s]?\d{3}[-.\s]?\d{3}'),  # (5555) 123-123 or 5555-123-123
+            
+            # Match short codes for SMS or other short phone numbers
+            re.compile(r'\d{5,6}'),  # 12345 or 123456 (for short codes)
+            
+            # Match vanity phone numbers (e.g., 1-800-FLOWERS, where the number can be represented by letters)
+            re.compile(r'1-\d{3}-[A-Z]{3,4}'),  # Match numbers like 1-800-FLOWERS (letters replaced with digits in real cases)
         ]
         
         for pattern in phone_patterns:
