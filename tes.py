@@ -4,6 +4,7 @@ import time
 import numpy as np
 import cv2
 import re
+from typing import List
 import easyocr
 from datetime import datetime
 import spacy
@@ -28,9 +29,9 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Modify in production to only allow specific origins
+    allow_origins=["http://localhost:3000"],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
 
@@ -263,74 +264,100 @@ def process_event_image(image_bytes, verbose=False):
         venue_indicators = [
             "venue", "location", "place", "address", "at", "held at", "taking place at",
             "conference hall", "auditorium", "hall", "center", "centre", "building", 
-            "campus", "university", "hotel", "room"
+            "campus", "university", "hotel", "room", "street", "road", "avenue"
         ]
-        
-        # Try NER for locations first
+
+        # Address-like regex patterns
+        address_patterns = [
+            r'\d{1,5}\s\w+\s(?:Street|St|Road|Rd|Avenue|Ave|Boulevard|Blvd|Lane|Ln|Drive|Dr)',  # "123 Main Street"
+            r'\b(?:PO Box|P\.O\. Box|Suite|Apt|Apartment)\s\d+',  # "PO Box 123", "Suite 456"
+            # r'\b[A-Za-z\s]+,\s?[A-Za-z\s]+,\s?\d{5}(?:-\d{4})?',  # "New York, NY 10001"
+            # r'\b[A-Za-z\s]+,\s?[A-Za-z\s]+',  # "Los Angeles, CA"
+            # r'\d{1,5}\s[A-Za-z\s]+,\s?[A-Za-z\s]+,\s?\d{5}'  # "123 Elm St, Springfield, 62704"
+        ]
+
         venue_candidates = []
+        address_found = False  # Track if a valid address exists
+
+        doc = nlp(full_text)
+
+        # Try NER for locations first
         for ent in doc.ents:
             if ent.label_ in ["GPE", "ORG", "FAC", "LOC"]:
-                # Check if it's not part of the date
                 if not any(ent.text.lower() in date.lower() for date in [event_info['date'], event_info['time']]):
                     venue_candidates.append(ent.text)
-        
+
         # Look for phrases containing venue indicators
         for indicator in venue_indicators:
             pattern = re.compile(rf'(?i)(?:{indicator}\s*[:;]?\s*)([^\.!?\n]+)', re.IGNORECASE)
             matches = pattern.finditer(full_text)
             for match in matches:
                 venue_text = match.group(1).strip()
-                # Verify it's not just the indicator word
                 if venue_text and venue_text.lower() != indicator.lower():
                     venue_candidates.append(venue_text)
-        
-        # Clean up and select the most likely venue
+
+        # Look for explicit address patterns in the full text
+        for pattern in address_patterns:
+            matches = re.findall(pattern, full_text)
+            if matches:
+                venue_candidates.extend(matches)
+                address_found = True  # Mark that an address was found
+
+        # Clean up and select the most likely venue/address
         if venue_candidates:
-            # Sort by length (prefer longer, more descriptive venue text)
             venue_candidates.sort(key=len, reverse=True)
             event_info['venue'] = clean_text(venue_candidates[0])
-        
+
         # --------- MODE DETECTION ---------
         # Determine if event is online, offline, or hybrid
         online_indicators = ["online", "virtual", "zoom", "webinar", "teams", "digital", "web", "stream"]
         offline_indicators = ["in person", "in-person", "venue", "physical", "on-site", "location"]
         hybrid_indicators = ["hybrid", "both online and offline", "online and in-person"]
-        
+
         mode_scores = {"online": 0, "offline": 0, "hybrid": 0}
-        
+
         # Count indicators in the text
         for indicator in online_indicators:
             if indicator in full_text.lower():
                 mode_scores["online"] += 1
-                
+
         for indicator in offline_indicators:
             if indicator in full_text.lower():
                 mode_scores["offline"] += 1
-                
+
         for indicator in hybrid_indicators:
             if indicator in full_text.lower():
                 mode_scores["hybrid"] += 1
-        
-        # Hybrid takes precedence if mentioned
+
+        # Final mode determination
         if mode_scores["hybrid"] > 0:
             event_info["mode"] = "hybrid"
-        # Otherwise use the mode with more indicators
+        elif address_found:  # If an address is found, assume offline
+            event_info["mode"] = "offline"
         elif mode_scores["online"] > mode_scores["offline"]:
             event_info["mode"] = "online"
         elif mode_scores["offline"] > mode_scores["online"]:
             event_info["mode"] = "offline"
-        # If no clear indicators, use venue as a heuristic
-        elif event_info["venue"]:
+        elif event_info["venue"]:  # If venue exists, assume offline
             event_info["mode"] = "offline"
         else:
-            event_info["mode"] = "online"  # Default to online if no venue and no indicators
+            event_info["mode"] = "online"  # Default to online if nothing is found
+
         
         # --------- CONTACT INFORMATION ---------
         # Look for phone numbers
         phone_patterns = [
-            r'(?:\+\d{1,3}[-\.\s]?)?\(?\d{3}\)?[-\.\s]?\d{3}[-\.\s]?\d{4}',
-            r'(?:\+\d{1,3}[-\.\s]?)?\d{5}[-\.\s]?\d{5}',
-            r'(?:\+\d{1,3}[-\.\s]?)?\d{4}[-\.\s]?\d{3}[-\.\s]?\d{3}'
+            # Matches numbers like +123-345-345, +91-12345-67890, +44-203-123-4567, +9845 0839 938
+            r'\+\d{1,4}[-.\s]?\d{2,5}[-.\s]?\d{2,5}[-.\s]?\d{2,5}',  
+
+            # Matches standard international formats like +1 (123) 456-7890 or +91 98765 43210
+            r'\+\d{1,4}[-.\s]?\(?\d{2,5}\)?[-.\s]?\d{3,5}[-.\s]?\d{3,5}',  
+
+            # Matches numbers with or without country codes like (123) 456-7890 or 123-456-7890
+            r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}',  
+
+            # Matches longer variations like +123 4567 89012
+            r'\+\d{1,4}[-.\s]?\d{4,6}[-.\s]?\d{4,6}', 
         ]
         
         for pattern in phone_patterns:
@@ -376,7 +403,7 @@ def process_event_image(image_bytes, verbose=False):
         raise ValueError(f"Image processing failed: {str(e)}")
 
 @app.post("/extract")
-async def extract_info(file: UploadFile = File(...)):
+async def extract_info(files: List[UploadFile] = File(...)):
     """
     Extract information from an event poster image
     
@@ -387,25 +414,29 @@ async def extract_info(file: UploadFile = File(...)):
         dict: Extracted event information with processing time
     """
     try:
+        results = []
+        for file in files:
         # Record start time for performance measurement
-        start_time = time.time()
-        
-        # Check file type
-        content_type = file.content_type
-        if not content_type.startswith("image/"):
-            raise HTTPException(status_code=400, detail="File must be an image")
-        
-        # Read the image bytes
-        image_bytes = await file.read()
-        
-        # Process the image
-        result = process_event_image(image_bytes)
-        
-        # Calculate processing time
-        end_time = time.time()
-        result["processing_time"] = f"{end_time - start_time:.4f} seconds"
-        
-        return result
+            start_time = time.time()
+            
+            # Check file type
+            content_type = file.content_type
+            if not content_type.startswith("image/"):
+                raise HTTPException(status_code=400, detail="File must be an image")
+            
+            # Read the image bytes
+            image_bytes = await file.read()
+            
+            # Process the image
+            result = process_event_image(image_bytes)
+            
+            # Calculate processing time
+            end_time = time.time()
+            result["processing_time"] = f"{end_time - start_time:.4f} seconds"
+            
+            results.append(result)
+            
+            return {"extracted_data":results}
     
     except ValueError as e:
         logger.error(f"Value error: {str(e)}")
