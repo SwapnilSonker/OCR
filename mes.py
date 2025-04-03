@@ -375,7 +375,8 @@ def process_event_image(image_bytes, verbose=False):
             re.compile(r'\+\d{1,4}[-.\s]?\d{2,5}[-.\s]?\d{2,5}[-.\s]?\d{2,5}'),
             re.compile(r'\+\d{1,4}[-.\s]?\(?\d{2,5}\)?[-.\s]?\d{3,5}[-.\s]?\d{3,5}'),
             re.compile(r'\(?\d{3}\)?[-.\s]?\d{3}[-.\s]?\d{4}'),
-            re.compile(r'\+\d{1,4}[-.\s]?\d{4,6}[-.\s]?\d{4,6}')
+            re.compile(r'\+\d{1,4}[-.\s]?\d{4,6}[-.\s]?\d{4,6}'),
+            re.compile(r'\(?\d{3}\)?[-.\s]?\d{4}[-.\s]?\d{4}')
         ]
         
         for pattern in phone_patterns:
