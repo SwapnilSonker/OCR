@@ -58,7 +58,7 @@ async def startup_event():
         logger.info("Loaded small spaCy model for better performance")
     except OSError:
         try:
-            nlp = spacy.load('en_core_web_trf')
+            nlp = spacy.load('en_core_web_sm')
             logger.info("Loaded transformer-based spaCy model")
         except:
             logger.error("Failed to load any spaCy model")
