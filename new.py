@@ -64,8 +64,18 @@ def process_image_version(img_data):
     name, img = img_data
     try:
         # More efficient parameter setting for EasyOCR
-        results = reader.readtext(img, paragraph=False, min_size=10, text_threshold=0.5, link_threshold=0.4, low_text=0.4)
-        
+        # results = reader.readtext(img, paragraph=False, min_size=10, text_threshold=0.5, link_threshold=0.4, low_text=0.4)
+        results = reader.readtext(
+            img, 
+            paragraph=False,
+            min_size=5,  # Lower to catch smaller text
+            text_threshold=0.3,  # Lower to detect more text
+            link_threshold=0.2,  # Lower for better text grouping
+            low_text=0.2,  # Lower to catch low contrast text
+            slope_ths=0.1,  # Better handle slightly rotated text
+            width_ths=0.5,  # Improved width threshold
+            add_margin=0.05  # Add small margin for better character recognition
+        )
         text_blocks = []
         for detection in results:
             bbox, text, confidence = detection
@@ -96,6 +106,24 @@ def process_image_version(img_data):
         logger.warning(f"Error processing {name} image: {str(e)}")
         return []
 
+def preprocess_for_delivery_stats(image):
+    # Convert to grayscale
+    if len(image.shape) == 3 and image.shape[2] == 3:
+        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = image  # Already grayscale
+
+    # Apply adaptive thresholding specifically tuned for this type of image
+    thresh = cv2.adaptiveThreshold(gray, 255, cv2.ADAPTIVE_THRESH_GAUSSIAN_C, 
+                                  cv2.THRESH_BINARY, 11, 2)
+    
+    # Increase contrast for better text recognition
+    alpha = 1.5  # Contrast control
+    beta = 10    # Brightness control
+    enhanced = cv2.convertScaleAbs(gray, alpha=alpha, beta=beta)
+    
+    return enhanced
+
 def extract_delivery_stats(image_bytes, verbose=False):
     """
     Extract only numerical statistics data from delivery app screenshots using EasyOCR.
@@ -113,6 +141,8 @@ def extract_delivery_stats(image_bytes, verbose=False):
         # Decode image
         nparr = np.frombuffer(image_bytes, np.uint8)
         image = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+        # Apply specialized preprocessing
+        image = preprocess_for_delivery_stats(image)
         if image is None:
             raise ValueError("Could not decode image")
         
@@ -132,7 +162,10 @@ def extract_delivery_stats(image_bytes, verbose=False):
         processed_images.append(("original", image))
         
         # Enhanced grayscale version
-        gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        if len(image.shape) == 3 and image.shape[2] == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image  # Already grayscale
         clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
         enhanced = clahe.apply(gray)
         processed_images.append(("enhanced", enhanced))
@@ -165,6 +198,32 @@ def extract_delivery_stats(image_bytes, verbose=False):
         # Helper function to clean text
         def clean_text(text):
             return re.sub(r'\s+', ' ', text).strip()
+
+        def extract_colon_values(text_blocks):
+            stats = {}
+            for block in text_blocks:
+                text = block['text']
+                # Look for patterns like "Label: 123"
+                if ':' in text:
+                    parts = text.split(':', 1)
+                    if len(parts) == 2:
+                        label = parts[0].strip()
+                        value_text = parts[1].strip()
+                        if value_text.isdigit():
+                            value = int(value_text)
+                            
+                            # Normalize the label
+                            if "successful deliveries" in label.lower():
+                                stats["successful_deliveries"] = value
+                            elif "carry forward" in label.lower() and "deliveries" not in label.lower():
+                                stats["carry_forward_deliveries"] = value
+                            elif "cannot deliver" in label.lower():
+                                stats["cannot_deliver"] = value
+                            elif "successful collections" in label.lower():
+                                stats["successful_collections"] = value
+                            elif "cannot collect" in label.lower():
+                                stats["cannot_collect"] = value
+            return stats    
         
         # Combined text for global pattern matching
         full_text = " ".join([block['text'] for block in text_blocks])
@@ -177,20 +236,27 @@ def extract_delivery_stats(image_bytes, verbose=False):
         
         # Define patterns for delivery statistics
         stat_patterns = [
-            # Standard patterns
-            re.compile(r'(Successful\s*deliveries)[\s:]+(\d+)', re.IGNORECASE),
-            re.compile(r'(Carry\s*forward)[\s:]+(\d+)', re.IGNORECASE),
-            re.compile(r'(Cannot\s*deliver)[\s:]+(\d+)', re.IGNORECASE),
-            re.compile(r'(Successful\s*collections)[\s:]+(\d+)', re.IGNORECASE),
-            re.compile(r'(Cannot\s*collect)[\s:]+(\d+)', re.IGNORECASE),
-            
-            # Fallback patterns with looser matching
-            re.compile(r'(Successful\s*deliver).*?(\d+)', re.IGNORECASE),
-            re.compile(r'(Carry\s*forward).*?(\d+)', re.IGNORECASE),
-            re.compile(r'(Cannot\s*deliver).*?(\d+)', re.IGNORECASE),
-            re.compile(r'(Successful\s*collect).*?(\d+)', re.IGNORECASE),
-            re.compile(r'(Cannot\s*collect).*?(\d+)', re.IGNORECASE)
-        ]
+                # Standard patterns
+                re.compile(r'(Successful\s*deliveries)[\s:]+(\d+)', re.IGNORECASE),
+                re.compile(r'(Carry\s*forward)[\s:]+(\d+)', re.IGNORECASE),
+                re.compile(r'(Cannot\s*deliver)[\s:]+(\d+)', re.IGNORECASE),
+                re.compile(r'(Successful\s*collections)[\s:]+(\d+)', re.IGNORECASE),
+                re.compile(r'(Cannot\s*collect)[\s:]+(\d+)', re.IGNORECASE),
+                
+                # Fallback patterns with looser matching
+                re.compile(r'(Successful\s*deliver).*?(\d+)', re.IGNORECASE),
+                re.compile(r'(Carry\s*forward).*?(\d+)', re.IGNORECASE),
+                re.compile(r'(Cannot\s*deliver).*?(\d+)', re.IGNORECASE),
+                re.compile(r'(Successful\s*collect).*?(\d+)', re.IGNORECASE),
+                re.compile(r'(Cannot\s*collect).*?(\d+)', re.IGNORECASE),
+
+                # Exact patterns matching the format in your image
+                re.compile(r'Successful\s*deliveries:\s*(\d+)', re.IGNORECASE),
+                re.compile(r'Carry\s*forward:\s*(\d+)', re.IGNORECASE),
+                re.compile(r'Cannot\s*deliver:\s*(\d+)', re.IGNORECASE),
+                re.compile(r'Successful\s*collections:\s*(\d+)', re.IGNORECASE),
+                re.compile(r'Cannot\s*collect:\s*(\d+)', re.IGNORECASE),
+            ]
         
         # Method 1: Extract stats using regex on full text
         stats = {}
@@ -199,32 +265,47 @@ def extract_delivery_stats(image_bytes, verbose=False):
         for pattern in stat_patterns:
             matches = pattern.finditer(full_text)
             for match in matches:
-                label = clean_text(match.group(1))
-                value = int(match.group(2))
-                
+                # Handle 1-group or 2-group regexes safely
+                if match.lastindex == 2:
+                    label = clean_text(match.group(1))
+                    value = int(match.group(2))
+                elif match.lastindex == 1:
+                    label = pattern.pattern  # fallback: use the pattern string as a clue
+                    value = int(match.group(1))
+                else:
+                    continue  # skip invalid matches
+
                 # Determine which section this belongs to
                 if "deliver" in label.lower():
                     section = "deliveries"
                 elif "collect" in label.lower():
                     section = "collections"
-                
+
                 # Normalize the label
-                if "successful" in label.lower():
+                lower_label = label.lower()
+                if "successful" in lower_label:
                     if section == "deliveries":
                         stats["successful_deliveries"] = value
                     elif section == "collections":
                         stats["successful_collections"] = value
-                elif "carry" in label.lower() and "forward" in label.lower():
+                elif "carry" in lower_label and "forward" in lower_label:
                     if section == "deliveries":
                         stats["carry_forward_deliveries"] = value
                     elif section == "collections":
                         stats["carry_forward_collections"] = value
-                elif "cannot" in label.lower():
-                    if "deliver" in label.lower():
+                elif "cannot" in lower_label:
+                    if "deliver" in lower_label:
                         stats["cannot_deliver"] = value
-                    elif "collect" in label.lower():
+                    elif "collect" in lower_label:
                         stats["cannot_collect"] = value
-        
+
+        # Add direct colon extraction method 
+        colon_stats = extract_colon_values(text_blocks)
+
+        # Add found stats to our overall stats dictionary
+        for key, value in colon_stats.items():
+            if key not in stats:
+                stats[key] = value
         # Method 2: If not all stats found, try analyzing adjacent blocks
         if len(stats) < 5:  # We expect at least 5 statistics
             # Group blocks that are likely part of the same line (similar y-coordinate)
