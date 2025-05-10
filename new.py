@@ -1,14 +1,17 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi import Form
 import time
 import numpy as np
 import cv2
 import re
-from typing import List
+from typing import List , Optional
 import easyocr
 import logging
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
+import os
+from openpyxl import Workbook, load_workbook
 
 # Set up logging
 logging.basicConfig(
@@ -23,13 +26,18 @@ app = FastAPI(
     version="1.0.0"
 )
 
+allowed_origins = [
+    "http://localhost:3000",  # React development server
+    "https://yourfrontenddomain.com",  # Replace with your production frontend domain
+]
+
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=allowed_origins,
     allow_credentials=True,
-    allow_methods=["GET", "POST", "PUT", "DELETE"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Allows all HTTP methods
+    allow_headers=["*"],  # Allows all headers
 )
 
 # Global variables for models
@@ -437,6 +445,51 @@ def extract_delivery_stats(image_bytes, verbose=False):
         logger.error(f"Error processing image: {str(e)}")
         raise ValueError(f"Image processing failed: {str(e)}")
 
+def log_driver_stats_to_excel(
+        filename: str,
+        date: str,
+        driver_name: str,
+        warehouse: str,
+        route: str,
+        successful_deliveries: int,
+        successful_collections: int,
+    ):
+        total_jobs = successful_deliveries + successful_collections
+
+        if not os.path.exists(filename):
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "Driverlog"
+            ws.append([
+                "Date", "Driver Name", "Warehouse", "Route",
+                "Successful Deliveries", "Successful Collections", "Total Jobs"
+            ])
+            wb.save(filename)
+
+        wb = load_workbook(filename)
+        ws = wb.active
+
+        # Check if the driver already has 2 entries for that date
+        entries_today = [
+            row for row in ws.iter_rows(min_row=2, values_only=True)
+            if row[0] == date and row[1] == driver_name
+        ]
+
+        if len(entries_today) >= 2:
+            raise ValueError(f"{driver_name} already has 2 routes logged for {date}")
+
+        # Avoid duplicate route logging
+        for row in ws.iter_rows(min_row=2):
+            if row[0].value == date and row[1].value == driver_name and row[3].value == route:
+                raise ValueError(f"Route {route} already logged for {driver_name} on {date}")
+
+        ws.append([
+            date, driver_name, warehouse, route,
+            successful_deliveries, successful_collections, total_jobs
+        ])
+
+        wb.save(filename)
+
 @app.post("/extract-stats")
 async def extract_stats(files: List[UploadFile] = File(...)):
     """
@@ -480,6 +533,62 @@ async def extract_stats(files: List[UploadFile] = File(...)):
     except Exception as e:
         logger.error(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail="An unexpected error occurred during processing")
+
+@app.post("/extract-excel")
+async def extract_stats(
+    files: List[UploadFile] = File(...),
+    driver_name: str = Form(...),
+    warehouse: str = Form(...),
+    routes: List[str] = Form(...),  # <-- plural!
+    date: str = Form(...),
+    excel_filename: Optional[str] = Form("default.xlsx")
+):
+    """
+    Extract numerical statistics and log them to Excel per driver and route.
+    """
+    try:
+        results = []
+        if len(files) != len(routes):
+            raise ValueError("Number of routes and files must match.")
+
+        for file, route in zip(files, routes):
+            start_time = time.time()
+
+            if not file.content_type.startswith("image/"):
+                raise HTTPException(status_code=400, detail="File must be an image")
+
+            image_bytes = await file.read()
+            stats = extract_delivery_stats(image_bytes)
+
+            end_time = time.time()
+            stats["processing_time"] = f"{end_time - start_time:.4f} seconds"
+
+            # Log to Excel
+            excel_file = excel_filename or "driver_stats.xlsx"
+            try:
+                log_driver_stats_to_excel(
+                    filename=excel_file,
+                    date=date,
+                    driver_name=driver_name,
+                    warehouse=warehouse,
+                    route=route,
+                    successful_deliveries=stats.get("Successful deliveries", 0),
+                    successful_collections=stats.get("Successful collections", 0)
+                )
+                stats["excel_status"] = f"Logged for route: {route}"
+            except ValueError as ve:
+                stats["excel_status"] = str(ve)
+
+            results.append(stats)
+
+        return {"extracted_statistics": results}
+
+    except ValueError as e:
+        logger.error(f"Value error: {str(e)}")
+        raise HTTPException(status_code=422, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error: {str(e)}")
+        raise HTTPException(status_code=500, detail="Unexpected error during processing")
 
 # Health check endpoint
 @app.get("/health")
