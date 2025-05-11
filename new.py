@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import os
 from openpyxl import Workbook, load_workbook
+from openpyxl.styles import Font, Alignment
 from storage import upload_to_mega
 
 # Set up logging
@@ -454,105 +455,80 @@ def log_driver_stats_to_excel(
         route: str,
         successful_deliveries: int,
         successful_collections: int,
-        image_link : str
+        image_link: str
     ):
-        total_jobs = successful_deliveries + successful_collections
-
+        # Create or load workbook
         if not os.path.exists(filename):
             wb = Workbook()
             ws = wb.active
-            ws.title = "Driverlog"
-            ws.append([
+            ws.title = "DriverStats"
+            # Set up headers
+            headers = [
                 "Date", "Driver Name", "Warehouse", "Route",
-                "Successful Deliveries", "Successful Collections", "Total Jobs", "Image Link"
-            ])
-            wb.save(filename)
-
-        wb = load_workbook(filename)
-        if "DriverLog" not in wb.sheetnames:
-            ws = wb.create_sheet("DriverLog")
-            ws.append([
-                "Date" , "Driver Name" ,"Warehouse" , "Route" ,
-                "Successful Deliveries", "Successful Collections", "Total Jobs", "Image Link"
-            ])
+                "Successful Deliveries", "Successful Collections", 
+                "Total Jobs", "Image Link", "Entry Timestamp"
+            ]
+            ws.append(headers)
+            # Format headers
+            for cell in ws[1]:
+                cell.font = Font(bold=True)
+                cell.alignment = Alignment(horizontal='center')
         else:
-            ws = wb["DriverLog"]    
-        # ws = wb.active
+            wb = load_workbook(filename)
+            ws = wb.active
 
-        # Check if the driver already has 2 entries for that date
-        entries_today = [
-            row for row in ws.iter_rows(min_row=2, values_only=True)
-            if row[0] == date and row[1] == driver_name
+        # Validate entries
+        total_jobs = successful_deliveries + successful_collections
+
+        # Check for duplicate entries
+        duplicate = False
+        for row in ws.iter_rows(min_row=2, values_only=True):
+            if (row[0] == date and row[1] == driver_name and 
+                row[3] == route):
+                duplicate = True
+                break
+
+        if duplicate:
+            raise ValueError(f"Entry already exists for driver {driver_name} on {date} for route {route}")
+
+        # Add new entry
+        from datetime import datetime
+        new_row = [
+            date,
+            driver_name,
+            warehouse,
+            route,
+            successful_deliveries,
+            successful_collections,
+            total_jobs,
+            image_link,
+            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         ]
+        ws.append(new_row)
 
-        # if len(entries_today) >= 2:
-        #     raise ValueError(f"{driver_name} already has 2 routes logged for {date}")
+        # Format the new row
+        row_num = ws.max_row
+        for col in range(1, len(new_row) + 1):
+            cell = ws.cell(row=row_num, column=col)
+            cell.alignment = Alignment(horizontal='center')
+            
+            # Make the image link clickable
+            if col == 8:  # Image Link column
+                cell.hyperlink = image_link
+                cell.font = Font(color="0000FF", underline="single")
 
-        # Avoid duplicate route logging
-        for row in ws.iter_rows(min_row=2):
-            if row[0].value == date and row[1].value == driver_name and row[3].value == route:
-                raise ValueError(f"Route {route} already logged for {driver_name} on {date}")
-
-        ws.append([
-            date, driver_name, warehouse, route,
-            successful_deliveries, successful_collections, total_jobs,
-            image_link
-        ])
-
-            # === DRIVER SUMMARY PIVOT SHEET ===
-        if "DriverSummary" not in wb.sheetnames:
-            summary_ws = wb.create_sheet("DriverSummary")
-            summary_ws.title = "DriverSummary"
-            summary_ws['A1'] = "Driver \ Date"
-        else:
-            summary_ws = wb["DriverSummary"]
-
-        date_cols = {cell.value: cell.column for cell in summary_ws[1] if cell.value}
-        driver_rows = {
-            summary_ws.cell(row=i, column=1).value: i
-            for i in range(2, summary_ws.max_row + 1)
-            if summary_ws.cell(row=i, column=1).value
-        }   
-
-        # Add date column if not present
-        if date not in date_cols:
-                new_col = summary_ws.max_column + 1
-                summary_ws.cell(row=1, column=new_col).value = date
-                date_cols[date] = new_col
-
-        # Add driver row if not present
-        if driver_name not in driver_rows:
-            new_row = summary_ws.max_row + 1
-            summary_ws.cell(row=new_row, column=1).value = driver_name
-            driver_rows[driver_name] = new_row 
-
-        summary_cell = summary_ws.cell(row=driver_rows[driver_name], column=date_cols[date]) 
-        if summary_cell.value:
-            raise ValueError(f"DriverSummary already has data for {driver_name} on {date}")  
-
-        summary_cell.value = total_jobs
-        summary_cell.hyperlink = image_link
-        summary_cell.style = "Hyperlink"      
-
-        # === ROUTE ↔ IMAGE VALIDATION SHEET ===
-        if "RouteImageMap" not in wb.sheetnames:
-            map_ws = wb.create_sheet("RouteImageMap")
-            map_ws.append(["Route", "Image Link"])
-        else:
-            map_ws = wb["RouteImageMap"]  
-
-        existing_mappings = {
-            row[0].value: row[1].value
-            for row in map_ws.iter_rows(min_row=2)
-            if row[0].value and row[1].value
-        }        
-
-         # Check consistency: route → unique image
-        if route in existing_mappings:
-            if existing_mappings[route] != image_link:
-                raise ValueError(f"Route '{route}' already linked to a different image.")
-        else:
-            map_ws.append([route, image_link])
+        # Auto-adjust column widths
+        for column in ws.columns:
+            max_length = 0
+            column = list(column)
+            for cell in column:
+                try:
+                    if len(str(cell.value)) > max_length:
+                        max_length = len(str(cell.value))
+                except:
+                    pass
+            adjusted_width = (max_length + 2)
+            ws.column_dimensions[column[0].column_letter].width = adjusted_width
 
         wb.save(filename)
 
@@ -607,21 +583,21 @@ async def extract_stats(
     warehouse: str = Form(...),
     routes: List[str] = Form(...),  # <-- plural!
     date: str = Form(...),
-    excel_filename: Optional[str] = Form("default.xlsx")
+    excel_filename: Optional[str] = Form("driver_stats.xlsx")
  ):
     """
     Extract numerical statistics and log them to Excel per driver and route.
     """
     try:
         results = []
-        if len(files) != len(routes):
-            raise ValueError("Number of routes and files must match.")
+        if len(files) > len(routes):
+            raise ValueError("Cannot have more images than routes")
 
-        for file, route in zip(files, routes):
+        for idx, file in enumerate(files):
             start_time = time.time()
 
             if not file.content_type.startswith("image/"):
-                raise HTTPException(status_code=400, detail="File must be an image")
+                raise HTTPException(status_code=400, detail=f"File {file.filename} must be an image")
 
             image_bytes = await file.read()
             stats = extract_delivery_stats(image_bytes)
@@ -633,21 +609,38 @@ async def extract_stats(
 
             # Log to Excel
             excel_file = excel_filename or "driver_stats.xlsx"
-            try:
-                log_driver_stats_to_excel(
-                    filename=excel_file,
-                    date=date,
-                    driver_name=driver_name,
-                    warehouse=warehouse,
-                    route=route,
-                    successful_deliveries=stats.get("Successful deliveries", 0),
-                    successful_collections=stats.get("Successful collections", 0),
-                    image_link = public_image_url
-                )
-                stats["excel_status"] = f"Logged for route: {route}"
-            except ValueError as ve:
-                stats["excel_status"] = str(ve)
-
+            if len(files) == 1 and len(routes) > 1:
+                for route in routes:
+                    try:
+                        log_driver_stats_to_excel(
+                            filename=excel_file,
+                            date=date,
+                            driver_name=driver_name,
+                            warehouse=warehouse,
+                            route=route,
+                            successful_deliveries=stats.get("Successful deliveries", 0),
+                            successful_collections=stats.get("Successful collections", 0),
+                            image_link = public_image_url
+                        )
+                        stats["excel_status"] = f"Logged for route: {route}"
+                    except ValueError as ve:
+                        stats["excel_status"] = str(ve)
+            else:
+                try:
+                    log_driver_stats_to_excel(
+                        filename=excel_file,
+                        date=date,
+                        driver_name=driver_name,
+                        warehouse=warehouse,
+                        route=routes[idx],
+                        successful_deliveries=stats.get("Successful deliveries", 0),
+                        successful_collections=stats.get("Successful collections", 0),
+                        image_link = public_image_url
+                    )
+                    stats["excel_status"] = f"Logged for route: {routes[idx]}"
+                except ValueError as ve:
+                    stats["excel_status"] = str(ve)
+                
             stats["image_link"] = public_image_url
             results.append(stats)
 
