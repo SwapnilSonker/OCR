@@ -581,7 +581,7 @@ async def extract_stats(
     files: List[UploadFile] = File(...),
     driver_name: str = Form(...),
     warehouse: str = Form(...),
-    routes: List[str] = Form(...),  # <-- plural!
+    routes: List[str] = Form(...),  
     date: str = Form(...),
     excel_filename: Optional[str] = Form("driver_stats.xlsx")
  ):
