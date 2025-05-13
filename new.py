@@ -13,6 +13,7 @@ from functools import lru_cache
 import os
 from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment
+from openpyxl.utils import get_column_letter
 from storage import upload_to_mega
 
 # Set up logging
@@ -448,89 +449,96 @@ def extract_delivery_stats(image_bytes, verbose=False):
         raise ValueError(f"Image processing failed: {str(e)}")
 
 def log_driver_stats_to_excel(
-        filename: str,
-        date: str,
-        driver_name: str,
-        warehouse: str,
-        route: str,
-        successful_deliveries: int,
-        successful_collections: int,
-        image_link: str
-    ):
-        # Create or load workbook
-        if not os.path.exists(filename):
-            wb = Workbook()
-            ws = wb.active
-            ws.title = "DriverStats"
-            # Set up headers
-            headers = [
-                "Date", "Driver Name", "Warehouse", "Route",
-                "Successful Deliveries", "Successful Collections", 
-                "Total Jobs", "Image Link", "Entry Timestamp"
-            ]
-            ws.append(headers)
-            # Format headers
-            for cell in ws[1]:
-                cell.font = Font(bold=True)
-                cell.alignment = Alignment(horizontal='center')
+    filename: str,
+    date: str,
+    driver_name: str,
+    warehouse: str,
+    route: str,
+    successful_deliveries: int,
+    successful_collections: int,
+    image_link: str
+ ):
+
+    # Column headers for each driver's block
+    stat_headers = [
+        "Successful Deliveries", "Successful Collections",
+        "Total Jobs", "Route", "Image Link"
+    ]
+
+    # Create or load workbook
+    if not os.path.exists(filename):
+        wb = Workbook()
+        wb.remove(wb.active)  # remove default sheet
+    else:
+        wb = load_workbook(filename)
+
+    # Get or create sheet by warehouse name
+    if warehouse not in wb.sheetnames:
+        ws = wb.create_sheet(title=warehouse)
+        # Create initial header row with 'Date' in A1 and A2
+        ws.merge_cells(start_row=1, start_column=1, end_row=2, end_column=1)
+        ws.cell(row=1, column=1, value="Date").font = Font(bold=True)
+        ws.cell(row=1, column=1).alignment = Alignment(horizontal='center', vertical='center')
+    else:
+        ws = wb[warehouse]
+
+    # Map driver name to column start position
+    driver_columns = {}
+    col = 2  # Starting from column B (since A is Date)
+    while ws.cell(row=1, column=col).value:
+        driver = ws.cell(row=1, column=col).value
+        if driver:
+            driver_columns[driver] = col
+            col += len(stat_headers)
         else:
-            wb = load_workbook(filename)
-            ws = wb.active
+            break
 
-        # Validate entries
-        total_jobs = successful_deliveries + successful_collections
+    # If driver not already in headers, add them
+    if driver_name not in driver_columns:
+        start_col = col
+        driver_columns[driver_name] = start_col
+        end_col = start_col + len(stat_headers) - 1
+        ws.merge_cells(start_row=1, start_column=start_col, end_row=1, end_column=end_col)
+        ws.cell(row=1, column=start_col, value=driver_name).font = Font(bold=True)
+        ws.cell(row=1, column=start_col).alignment = Alignment(horizontal='center')
 
-        # Check for duplicate entries
-        duplicate = False
-        for row in ws.iter_rows(min_row=2, values_only=True):
-            if (row[0] == date and row[1] == driver_name and 
-                row[3] == route):
-                duplicate = True
-                break
+        for i, header in enumerate(stat_headers):
+            ws.cell(row=2, column=start_col + i, value=header).font = Font(bold=True)
+            ws.cell(row=2, column=start_col + i).alignment = Alignment(horizontal='center')
 
-        if duplicate:
-            raise ValueError(f"Entry already exists for driver {driver_name} on {date} for route {route}")
+    # 👉 Append new row even if the date already exists (to support multiple routes per driver per date)
+    new_row = ws.max_row + 1
 
-        # Add new entry
-        from datetime import datetime
-        new_row = [
-            date,
-            driver_name,
-            warehouse,
-            route,
-            successful_deliveries,
-            successful_collections,
-            total_jobs,
-            image_link,
-            datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        ]
-        ws.append(new_row)
+    # Write date in column A
+    ws.cell(row=new_row, column=1, value=date)
+    ws.cell(row=new_row, column=1).alignment = Alignment(horizontal='center')
 
-        # Format the new row
-        row_num = ws.max_row
-        for col in range(1, len(new_row) + 1):
-            cell = ws.cell(row=row_num, column=col)
-            cell.alignment = Alignment(horizontal='center')
-            
-            # Make the image link clickable
-            if col == 8:  # Image Link column
-                cell.hyperlink = image_link
-                cell.font = Font(color="0000FF", underline="single")
+    # Insert stats
+    start_col = driver_columns[driver_name]
+    total_jobs = successful_deliveries + successful_collections
+    values = [successful_deliveries, successful_collections, total_jobs, route, image_link]
 
-        # Auto-adjust column widths
-        for column in ws.columns:
-            max_length = 0
-            column = list(column)
-            for cell in column:
-                try:
-                    if len(str(cell.value)) > max_length:
-                        max_length = len(str(cell.value))
-                except:
-                    pass
-            adjusted_width = (max_length + 2)
-            ws.column_dimensions[column[0].column_letter].width = adjusted_width
+    for i, val in enumerate(values):
+        cell = ws.cell(row=new_row, column=start_col + i, value=val)
+        cell.alignment = Alignment(horizontal='center')
+        if i == 4:  # Image Link column
+            cell.hyperlink = image_link
+            cell.font = Font(color="0000FF", underline="single")
 
-        wb.save(filename)
+    # Auto-adjust column widths
+    for col_cells in ws.columns:
+        max_length = 0
+        col_letter = get_column_letter(col_cells[0].column)
+        for cell in col_cells:
+            try:
+                if cell.value and len(str(cell.value)) > max_length:
+                    max_length = len(str(cell.value))
+            except:
+                pass
+        ws.column_dimensions[col_letter].width = max_length + 2
+
+    wb.save(filename)
+    print(f"Appended data for driver '{driver_name}' on {date} to warehouse sheet '{warehouse}'.")
 
 @app.post("/extract-stats")
 async def extract_stats(files: List[UploadFile] = File(...)):
@@ -608,7 +616,7 @@ async def extract_stats(
             public_image_url = upload_to_mega(file.filename , image_bytes)
 
             # Log to Excel
-            excel_file = excel_filename or "driver_stats.xlsx"
+            excel_file = excel_filename or "driver_stats1.xlsx"
             if len(files) == 1 and len(routes) > 1:
                 for route in routes:
                     try:
