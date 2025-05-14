@@ -6,3 +6,7 @@ python-multipart
 uvicorn
 fastapi
 gunicorn
+google-api-python-client
+google-auth-oauthlib
+google-auth-httplib2
+gspread

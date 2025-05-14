@@ -8,6 +8,8 @@ import re
 from typing import List , Optional
 import easyocr
 import logging
+import asyncio
+import datetime
 from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 import os
@@ -15,11 +17,16 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
 from storage import upload_to_mega
+from google_sheets_api.sheet import log_driver_stats_to_google_sheets , get_google_sheets_service
 
 # Set up logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    handlers=[
+        logging.FileHandler('app.log'),
+        logging.StreamHandler()
+    ]
 )
 logger = logging.getLogger(__name__)
 
@@ -584,82 +591,232 @@ async def extract_stats(files: List[UploadFile] = File(...)):
         logger.error(f"Unexpected error: {str(e)}")
         raise HTTPException(status_code=500, detail="An unexpected error occurred during processing")
 
+# @app.post("/extract-excel")
+# async def extract_stats(
+#     files: List[UploadFile] = File(...),
+#     driver_name: str = Form(...),
+#     warehouse: str = Form(...),
+#     routes: List[str] = Form(...),  
+#     date: str = Form(...),
+#     excel_filename: Optional[str] = Form("driver_stats.xlsx")
+#  ):
+#     """
+#     Extract numerical statistics and log them to Excel per driver and route.
+#     """
+#     try:
+#         results = []
+#         if len(files) > len(routes):
+#             raise ValueError("Cannot have more images than routes")
+
+#         for idx, file in enumerate(files):
+#             start_time = time.time()
+
+#             if not file.content_type.startswith("image/"):
+#                 raise HTTPException(status_code=400, detail=f"File {file.filename} must be an image")
+
+#             image_bytes = await file.read()
+#             stats = extract_delivery_stats(image_bytes)
+
+#             end_time = time.time()
+#             stats["processing_time"] = f"{end_time - start_time:.4f} seconds"
+
+#             public_image_url = upload_to_mega(file.filename , image_bytes)
+
+#             # Log to Excel
+#             excel_file = excel_filename or "driver_stats1.xlsx"
+#             if len(files) == 1 and len(routes) > 1:
+#                 for route in routes:
+#                     try:
+#                         success = log_driver_stats_to_google_sheets(
+#                             date=date,
+#                             driver_name=driver_name,
+#                             warehouse=warehouse,
+#                             route=route,
+#                             successful_deliveries=stats.get("Successful deliveries", 0),
+#                             successful_collections=stats.get("Successful collections", 0),
+#                             image_link = public_image_url
+#                         )
+#                         stats["sheets_status"] = "Success" if success else "Failed"
+#                     except ValueError as ve:
+#                         stats["sheets_status"] = str(ve)
+#             else:
+#                 try:
+#                     success = log_driver_stats_to_google_sheets(
+#                         date=date,
+#                         driver_name=driver_name,
+#                         warehouse=warehouse,
+#                         route=routes[idx],
+#                         successful_deliveries=stats.get("Successful deliveries", 0),
+#                         successful_collections=stats.get("Successful collections", 0),
+#                         image_link = public_image_url
+#                     )
+#                     stats["sheets_status"] = "Success" if success else "Failed"
+#                 except ValueError as ve:
+#                     stats["sheets_status"] = str(ve)
+                
+#             stats["image_link"] = public_image_url
+#             results.append(stats)
+
+#         return {"extracted_statistics": results}
+
+#     except ValueError as e:
+#         logger.error(f"Value error: {str(e)}")
+#         raise HTTPException(status_code=422, detail=str(e))
+#     except Exception as e:
+#         logger.error(f"Unexpected error: {str(e)}")
+#         raise HTTPException(status_code=500, detail="Unexpected error during processing")
+
 @app.post("/extract-excel")
 async def extract_stats(
     files: List[UploadFile] = File(...),
     driver_name: str = Form(...),
     warehouse: str = Form(...),
     routes: List[str] = Form(...),  
-    date: str = Form(...),
-    excel_filename: Optional[str] = Form("driver_stats.xlsx")
+    date: str = Form(...)
  ):
     """
-    Extract numerical statistics and log them to Excel per driver and route.
+    Extract stats and log them to Google Sheets with improved error handling
     """
     try:
-        results = []
+        # Validate inputs first
+        if not files:
+            raise HTTPException(status_code=400, detail="No files provided")
+        if not routes:
+            raise HTTPException(status_code=400, detail="No routes provided")
         if len(files) > len(routes):
-            raise ValueError("Cannot have more images than routes")
+            raise HTTPException(status_code=400, detail="Cannot have more images than routes")
 
+        # Initialize Google Sheets service once
+        try:
+            sheets_service = get_google_sheets_service()
+            logger.info("Successfully initialized Google Sheets service")
+        except Exception as e:
+            logger.error(f"Failed to initialize Google Sheets service: {str(e)}")
+            raise HTTPException(
+                status_code=500, 
+                detail="Failed to connect to Google Sheets. Please try again later."
+            )
+
+        results = []
+        
         for idx, file in enumerate(files):
-            start_time = time.time()
-
-            if not file.content_type.startswith("image/"):
-                raise HTTPException(status_code=400, detail=f"File {file.filename} must be an image")
-
-            image_bytes = await file.read()
-            stats = extract_delivery_stats(image_bytes)
-
-            end_time = time.time()
-            stats["processing_time"] = f"{end_time - start_time:.4f} seconds"
-
-            public_image_url = upload_to_mega(file.filename , image_bytes)
-
-            # Log to Excel
-            excel_file = excel_filename or "driver_stats1.xlsx"
-            if len(files) == 1 and len(routes) > 1:
-                for route in routes:
-                    try:
-                        log_driver_stats_to_excel(
-                            filename=excel_file,
-                            date=date,
-                            driver_name=driver_name,
-                            warehouse=warehouse,
-                            route=route,
-                            successful_deliveries=stats.get("Successful deliveries", 0),
-                            successful_collections=stats.get("Successful collections", 0),
-                            image_link = public_image_url
-                        )
-                        stats["excel_status"] = f"Logged for route: {route}"
-                    except ValueError as ve:
-                        stats["excel_status"] = str(ve)
-            else:
-                try:
-                    log_driver_stats_to_excel(
-                        filename=excel_file,
-                        date=date,
-                        driver_name=driver_name,
-                        warehouse=warehouse,
-                        route=routes[idx],
-                        successful_deliveries=stats.get("Successful deliveries", 0),
-                        successful_collections=stats.get("Successful collections", 0),
-                        image_link = public_image_url
+            try:
+                # Validate file type
+                if not file.content_type.startswith("image/"):
+                    raise HTTPException(
+                        status_code=400, 
+                        detail=f"File {file.filename} must be an image"
                     )
-                    stats["excel_status"] = f"Logged for route: {routes[idx]}"
-                except ValueError as ve:
-                    stats["excel_status"] = str(ve)
+
+                # Process image with timing
+                start_time = time.time()
+                image_bytes = await file.read()
                 
-            stats["image_link"] = public_image_url
-            results.append(stats)
+                try:
+                    stats = extract_delivery_stats(image_bytes)
+                except Exception as e:
+                    logger.error(f"Error extracting stats from image: {str(e)}")
+                    raise HTTPException(
+                        status_code=422,
+                        detail=f"Failed to extract stats from image {file.filename}: {str(e)}"
+                    )
 
-        return {"extracted_statistics": results}
+                processing_time = time.time() - start_time
+                stats["processing_time"] = f"{processing_time:.4f} seconds"
 
-    except ValueError as e:
-        logger.error(f"Value error: {str(e)}")
-        raise HTTPException(status_code=422, detail=str(e))
+                # Upload image with retry mechanism
+                try:
+                    public_image_url = upload_to_mega(file.filename, image_bytes)
+                except Exception as e:
+                    logger.error(f"Failed to upload image to storage: {str(e)}")
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Failed to upload image {file.filename} to storage"
+                    )
+
+                # Handle Google Sheets updates with retries
+                max_retries = 3
+                retry_delay = 2  # seconds
+                
+                if len(files) == 1 and len(routes) > 1:
+                    # Single image, multiple routes case
+                    for route in routes:
+                        for attempt in range(max_retries):
+                            try:
+                                success = log_driver_stats_to_google_sheets(
+                                    date=date,
+                                    driver_name=driver_name,
+                                    warehouse=warehouse,
+                                    route=route,
+                                    successful_deliveries=stats.get("Successful deliveries", 0),
+                                    successful_collections=stats.get("Successful collections", 0),
+                                    image_link=public_image_url
+                                )
+                                if success:
+                                    stats["sheets_status"] = "Success"
+                                    break
+                                else:
+                                    stats["sheets_status"] = "Failed"
+                            except Exception as e:
+                                logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
+                                if attempt == max_retries - 1:
+                                    stats["sheets_status"] = f"Failed after {max_retries} attempts: {str(e)}"
+                                else:
+                                    await asyncio.sleep(retry_delay)
+                else:
+                    # Multiple images, one route each case
+                    for attempt in range(max_retries):
+                        try:
+                            success = log_driver_stats_to_google_sheets(
+                                date=date,
+                                driver_name=driver_name,
+                                warehouse=warehouse,
+                                route=routes[idx],
+                                successful_deliveries=stats.get("Successful deliveries", 0),
+                                successful_collections=stats.get("Successful collections", 0),
+                                image_link=public_image_url
+                            )
+                            if success:
+                                stats["sheets_status"] = "Success"
+                                break
+                            else:
+                                stats["sheets_status"] = "Failed"
+                        except Exception as e:
+                            logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
+                            if attempt == max_retries - 1:
+                                stats["sheets_status"] = f"Failed after {max_retries} attempts: {str(e)}"
+                            else:
+                                await asyncio.sleep(retry_delay)
+
+                stats["image_link"] = public_image_url
+                results.append(stats)
+
+            except Exception as file_error:
+                # Handle individual file processing errors
+                logger.error(f"Error processing file {file.filename}: {str(file_error)}")
+                results.append({
+                    "filename": file.filename,
+                    "error": str(file_error),
+                    "status": "Failed"
+                })
+
+        return {
+            "extracted_statistics": results,
+            "total_files_processed": len(files),
+            "successful_processes": len([r for r in results if r.get("sheets_status") == "Success"]),
+            "timestamp": datetime.datetime.now().isoformat()
+        }
+
+    except HTTPException as http_error:
+        # Re-raise HTTP exceptions
+        raise http_error
     except Exception as e:
-        logger.error(f"Unexpected error: {str(e)}")
-        raise HTTPException(status_code=500, detail="Unexpected error during processing")
+        # Log unexpected errors and return a generic error message
+        logger.error(f"Unexpected error in extract_stats: {str(e)}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="An unexpected error occurred. Please try again later."
+        )
 
 # Health check endpoint
 @app.get("/health")

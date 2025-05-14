@@ -2,3 +2,8 @@ myenv
 __pycache__
 app.py
 main.py
+# credentials.json
+default.xlsx
+driver_stats.xlsx
+driver_state.xlsx
+app.log
