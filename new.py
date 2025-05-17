@@ -18,6 +18,7 @@ from openpyxl.styles import Font, Alignment
 from openpyxl.utils import get_column_letter
 from storage import upload_to_mega
 from google_sheets_api.sheet import log_driver_stats_to_google_sheets , get_google_sheets_service
+from Database.main import log_drivers_stats_to_mongo
 
 # Set up logging
 logging.basicConfig(
@@ -754,7 +755,21 @@ async def extract_stats(
                                 )
                                 if success:
                                     stats["sheets_status"] = "Success"
-                                    break
+                                    # Only try MongoDB if Sheets was successful
+                                    mongo_success = log_drivers_stats_to_mongo(
+                                        date=date,
+                                        driver_name=driver_name,
+                                        warehouse=warehouse,
+                                        route=route,
+                                        successful_deliveries=stats.get("Successful deliveries", 0),
+                                        successful_collections=stats.get("Successful collections", 0),
+                                        image_link=public_image_url
+                                    )
+                                    
+                                    stats["mongo_status"] = "Success" if mongo_success else "Failed"
+                                    if mongo_success:
+                                        stats["mongo_status"] = "Success"
+                                        break
                                 else:
                                     stats["sheets_status"] = "Failed"
                             except Exception as e:
@@ -778,13 +793,29 @@ async def extract_stats(
                             )
                             if success:
                                 stats["sheets_status"] = "Success"
-                                break
+                                # Only try MongoDB if Sheets was successful
+                                mongo_success = log_drivers_stats_to_mongo(
+                                    date=date,
+                                    driver_name=driver_name,
+                                    warehouse=warehouse,
+                                    route=routes[idx],
+                                    successful_deliveries=stats.get("Successful deliveries", 0),
+                                    successful_collections=stats.get("Successful collections", 0),
+                                    image_link=public_image_url
+                                )
+                                
+                                stats["mongo_status"] = "Success" if mongo_success else "Failed"
+                                if mongo_success:
+                                    stats["mongo_status"] = "Success"
+                                    break
                             else:
                                 stats["sheets_status"] = "Failed"
+                                stats["mongo_status"] = "Skipped due to sheet failure"
                         except Exception as e:
                             logger.warning(f"Attempt {attempt + 1} failed: {str(e)}")
                             if attempt == max_retries - 1:
                                 stats["sheets_status"] = f"Failed after {max_retries} attempts: {str(e)}"
+                                stats["mongo_status"] = "Skipped due to sheet failure"
                             else:
                                 await asyncio.sleep(retry_delay)
 

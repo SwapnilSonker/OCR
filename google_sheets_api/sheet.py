@@ -22,7 +22,7 @@ def get_google_sheets_service():
     try:
         credentials = service_account.Credentials.from_service_account_file(
             CREDENTIALS_PATH, scopes=SCOPES)
-        logger.info(f"retrying for login")
+        logger.info(f"trying for login")
         return build('sheets', 'v4', credentials=credentials)
     except Exception as e:
         logger.error(f"Error creating Google Sheets service: {str(e)}")

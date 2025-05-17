@@ -7,3 +7,4 @@ default.xlsx
 driver_stats.xlsx
 driver_state.xlsx
 app.log
+.env
