@@ -209,281 +209,87 @@ def log_driver_stats_to_google_sheets(
     successful_deliveries: int,
     successful_collections: int,
     image_link: str
- ):
+):
     """
-    Log driver statistics to Google Sheets maintaining the structure with proper alignment
-    Fixed to prevent column overlap issues
+    Logs driver stats to Google Sheets in the following format:
+    Date | Driver Name | Route | Successful Deliveries | Successful Collections | Total Jobs | Image Link
     """
     try:
-        # Define the column headers and their count per driver
-        stat_headers = [
-            "Successful Deliveries", "Successful Collections",
-            "Total Jobs", "Route", "Image Link"
-        ]
-        stats_column_count = len(stat_headers)
-
-        # Get Google Sheets service
+        # Get Sheets service
         service = get_google_sheets_service()
         sheets = service.spreadsheets()
 
-        # Get all sheets in the spreadsheet
+        # Check if sheet exists, else create it
         spreadsheet = sheets.get(spreadsheetId=SPREADSHEET_ID).execute()
         sheets_list = spreadsheet.get('sheets', [])
         sheet_names = [sheet['properties']['title'] for sheet in sheets_list]
 
-        # Create warehouse sheet if it doesn't exist
         if warehouse not in sheet_names:
-            request = {
-                'addSheet': {
-                    'properties': {
-                        'title': warehouse
-                    }
-                }
-            }
             sheets.batchUpdate(
                 spreadsheetId=SPREADSHEET_ID,
-                body={'requests': [request]}
+                body={'requests': [{'addSheet': {'properties': {'title': warehouse}}}]}
             ).execute()
 
-            # Initialize headers for the Date column
-            header_range = f'{warehouse}!A1:A2'
-            date_header = [['Date'], ['Date']]
+        # Set headers if not present
+        header_range = f'{warehouse}!A1:G1'
+        expected_headers = [
+            "Date", "Driver Name", "Route", "Successful Deliveries",
+            "Successful Collections", "Total Jobs", "Image Link"
+        ]
+        existing_headers = sheets.values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=header_range
+        ).execute().get('values', [])
+
+        if not existing_headers or existing_headers[0] != expected_headers:
             sheets.values().update(
                 spreadsheetId=SPREADSHEET_ID,
                 range=header_range,
                 valueInputOption='RAW',
-                body={'values': date_header}
+                body={'values': [expected_headers]}
             ).execute()
 
-            # Merge Date cells
-            merge_request = {
-                'requests': [{
-                    'mergeCells': {
-                        'range': {
-                            'sheetId': get_sheet_id(spreadsheet, warehouse),
-                            'startRowIndex': 0,
-                            'endRowIndex': 2,
-                            'startColumnIndex': 0,
-                            'endColumnIndex': 1
-                        },
-                        'mergeType': 'MERGE_ALL'
-                    }
-                }]
-            }
-            sheets.batchUpdate(spreadsheetId=SPREADSHEET_ID, body=merge_request).execute()
-
-        # Get current sheet structure to map drivers and their columns
-        result = sheets.values().get(
+        # Find next empty row
+        col_a_range = f'{warehouse}!A:A'
+        existing_rows = sheets.values().get(
             spreadsheetId=SPREADSHEET_ID,
-            range=f'{warehouse}!1:2'  # Get first two rows (headers)
-        ).execute()
-        values = result.get('values', [])
-        
-        # Initialize headers if needed
-        if not values:
-            values = [['Date'], ['Date']]
-        
-        # Make sure we have 2 rows for headers
-        if len(values) < 2:
-            while len(values) < 2:
-                values.append([''] * len(values[0]))
-        
-        # Ensure first two rows are complete
-        header_row = values[0] if len(values) > 0 else ['Date']
-        subheader_row = values[1] if len(values) > 1 else ['Date']
-        
-        # Build a map of existing driver columns
-        driver_columns = {}
-        current_driver = None
-        start_col = None
-        
-        # Go through header row to find existing drivers and their column ranges
-        for i in range(1, len(header_row)):
-            cell_value = header_row[i] if i < len(header_row) else ""
-            
-            if cell_value and cell_value != current_driver:
-                # Found a new driver name
-                if current_driver is not None:
-                    # Store previous driver's column range
-                    driver_columns[current_driver] = (start_col, i)
-                
-                # Start tracking new driver
-                current_driver = cell_value
-                start_col = i
-        
-        # Don't forget to add the last driver if we found one
-        if current_driver is not None and current_driver not in driver_columns:
-            driver_columns[current_driver] = (start_col, len(header_row))
-        
-        # Determine column position for our driver
-        driver_start_col = None
-        
-        if driver_name in driver_columns:
-            # Driver already exists, use their existing columns
-            driver_start_col = driver_columns[driver_name][0]
-        else:
-            # Driver doesn't exist, add after all existing drivers
-            if not driver_columns:
-                # No drivers yet, start at column B (index 1)
-                driver_start_col = 1
-            else:
-                # Find the end of the last driver section
-                last_end = max(end for _, (_, end) in driver_columns.items())
-                driver_start_col = last_end
-            
-            # Create a completely new header structure for the driver
-            # First, clear any existing data in the range where we'll add the driver
-            driver_end_col = driver_start_col + stats_column_count
-            
-            # Create the driver name cell (top row)
-            driver_header_range = f'{warehouse}!{get_column_letter(driver_start_col + 1)}1:{get_column_letter(driver_end_col)}1'
-            sheets.values().update(
-                spreadsheetId=SPREADSHEET_ID,
-                range=driver_header_range,
-                valueInputOption='RAW',
-                body={'values': [[driver_name] + [''] * (stats_column_count - 1)]}
-            ).execute()
-            
-            # Create the stat headers (second row)
-            stat_header_range = f'{warehouse}!{get_column_letter(driver_start_col + 1)}2:{get_column_letter(driver_end_col)}2'
-            sheets.values().update(
-                spreadsheetId=SPREADSHEET_ID,
-                range=stat_header_range,
-                valueInputOption='RAW',
-                body={'values': [stat_headers]}
-            ).execute()
-            
-            # Merge the driver name cells
-            merge_request = {
-                'requests': [{
-                    'mergeCells': {
-                        'range': {
-                            'sheetId': get_sheet_id(spreadsheet, warehouse),
-                            'startRowIndex': 0,
-                            'endRowIndex': 1,
-                            'startColumnIndex': driver_start_col,
-                            'endColumnIndex': driver_end_col
-                        },
-                        'mergeType': 'MERGE_ALL'
-                    }
-                }]
-            }
-            sheets.batchUpdate(spreadsheetId=SPREADSHEET_ID, body=merge_request).execute()
-            
-            # Add column borders for clarity
-            border_request = {
-                'requests': [{
-                    'updateBorders': {
-                        'range': {
-                            'sheetId': get_sheet_id(spreadsheet, warehouse),
-                            'startRowIndex': 0,
-                            'endRowIndex': 2,
-                            'startColumnIndex': driver_start_col,
-                            'endColumnIndex': driver_end_col
-                        },
-                        'top': {
-                            'style': 'SOLID',
-                            'width': 1,
-                            'color': {'red': 0, 'green': 0, 'blue': 0}
-                        },
-                        'bottom': {
-                            'style': 'SOLID',
-                            'width': 1,
-                            'color': {'red': 0, 'green': 0, 'blue': 0}
-                        },
-                        'left': {
-                            'style': 'SOLID',
-                            'width': 1,
-                            'color': {'red': 0, 'green': 0, 'blue': 0}
-                        },
-                        'right': {
-                            'style': 'SOLID',
-                            'width': 1,
-                            'color': {'red': 0, 'green': 0, 'blue': 0}
-                        }
-                    }
-                }]
-            }
-            sheets.batchUpdate(spreadsheetId=SPREADSHEET_ID, body=border_request).execute()
-        
-        # Get the last row with data
-        range_name = f'{warehouse}!A:A'
-        result = sheets.values().get(
-            spreadsheetId=SPREADSHEET_ID, range=range_name).execute()
-        values = result.get('values', [])
-        last_row = len(values) + 1 if values else 3  # Start at row 3 if no data
-        
-        # Calculate the total jobs
+            range=col_a_range
+        ).execute().get('values', [])
+        next_row = len(existing_rows) + 1
+
+        # Compute total jobs
         total_jobs = successful_deliveries + successful_collections
-        
-        # Create a new row with data
-        # Fill Date column first
-        date_cell_range = f'{warehouse}!A{last_row}'
-        sheets.values().update(
-            spreadsheetId=SPREADSHEET_ID,
-            range=date_cell_range,
-            valueInputOption='RAW',
-            body={'values': [[date]]}
-        ).execute()
-        
-        # Prepare driver stats data
-        driver_stats = [
-            successful_deliveries, 
+
+        # Prepare row
+        row_data = [
+            date,
+            driver_name,
+            route,
+            successful_deliveries,
             successful_collections,
             total_jobs,
-            route,
-            f'=HYPERLINK("{image_link}","View Image")'
+            f'=HYPERLINK("{image_link}", "View Image")'
         ]
-        
-        # Update each stat cell individually to avoid misalignment
-        for i, stat in enumerate(driver_stats):
-            cell_col = driver_start_col + i
-            cell_range = f'{warehouse}!{get_column_letter(cell_col + 1)}{last_row}'
-            
-            # Use appropriate input option based on content type
-            input_option = 'USER_ENTERED' if isinstance(stat, str) and stat.startswith('=') else 'RAW'
-            
-            sheets.values().update(
-                spreadsheetId=SPREADSHEET_ID,
-                range=cell_range,
-                valueInputOption=input_option,
-                body={'values': [[stat]]}
-            ).execute()
-        
-        # Apply formatting for better readability
-        format_request = {
-            'requests': [{
-                'repeatCell': {
-                    'range': {
-                        'sheetId': get_sheet_id(spreadsheet, warehouse),
-                        'startRowIndex': last_row - 1,
-                        'endRowIndex': last_row,
-                        'startColumnIndex': 0,
-                        'endColumnIndex': driver_start_col + stats_column_count
-                    },
-                    'cell': {
-                        'userEnteredFormat': {
-                            'horizontalAlignment': 'CENTER',
-                            'textFormat': {
-                                'fontSize': 10
-                            }
-                        }
-                    },
-                    'fields': 'userEnteredFormat(horizontalAlignment,textFormat)'
-                }
-            }]
-        }
-        sheets.batchUpdate(spreadsheetId=SPREADSHEET_ID, body=format_request).execute()
-        
+
+        # Write to sheet
+        write_range = f'{warehouse}!A{next_row}:G{next_row}'
+        sheets.values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=write_range,
+            valueInputOption='USER_ENTERED',
+            body={'values': [row_data]}
+        ).execute()
+
         return True
-    
+
     except HttpError as error:
         logger.error(f"Google Sheets API error: {str(error)}")
         return False
+
     except Exception as e:
         logger.error(f"Unexpected error in Google Sheets operation: {str(e)}")
         return False
-    
+
 def get_sheet_id(spreadsheet, sheet_name):
     """Helper function to get sheet ID from sheet name"""
     for sheet in spreadsheet['sheets']:
