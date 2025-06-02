@@ -20,7 +20,7 @@ Explicitly use python 3.10 for better alignment with tenacity and mega
 
 ### Create a Virtual Environment\
 ```
-python -m venv venv
+python3.10 -m venv .venv
 source venv/bin/activate  # On macOS/Linux
 venv\Scripts\activate  
 ```
