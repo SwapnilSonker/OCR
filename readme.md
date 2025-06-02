@@ -15,6 +15,7 @@ Returns structured data in JSON format.
 Requirements
 
 Python 3.11.9
+Explicitly use python 3.10 for better alignment with tenacity and mega
 
 
 ### Create a Virtual Environment\
@@ -37,6 +38,9 @@ python -m spacy download en_core_web_trf
 ### Running the API
 ```
 uvicorn mes:app --host 0.0.0.0 --port 8000 --reload
+
+# to run the client backend
+uvicorn new:appp --host 0.0.0.0 --port 8000 --reload 
 ```
 
 ## Testing the API using cURL
