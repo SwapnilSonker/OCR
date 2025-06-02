@@ -201,6 +201,115 @@ def get_google_sheets_service():
 #         logger.error(f"Unexpected error in Google Sheets operation: {str(e)}")
 #         return False
 
+def update_summary_sheet(
+    service,
+    driver_name: str,
+    total_jobs: int,
+    warehouse: str
+ ):
+    """
+    Update the summary sheet with cumulative total jobs for each driver.
+    Structure:
+    Driver1 | Driver2 | Driver3
+    150     | 200     | 75
+    
+    Each driver name is a hyperlink to their data in the warehouse sheet.
+    """
+    try:
+        sheets = service.spreadsheets()
+        spreadsheet = sheets.get(spreadsheetId=SPREADSHEET_ID).execute()
+        sheets_list = spreadsheet.get('sheets', [])
+        sheet_names = [sheet['properties']['title'] for sheet in sheets_list]
+
+        # Create Summary sheet if it doesn't exist
+        if "Summary" not in sheet_names:
+            sheets.batchUpdate(
+                spreadsheetId=SPREADSHEET_ID,
+                body={'requests': [{'addSheet': {'properties': {'title': "Summary"}}}]}
+            ).execute()
+            
+            # Set initial header and total row
+            sheets.values().update(
+                spreadsheetId=SPREADSHEET_ID,
+                range="Summary!A1",
+                valueInputOption='RAW',
+                body={'values': [["Total Jobs"]]}
+            ).execute()
+
+        # Get current header and total row
+        summary_range = "Summary!A1:Z2"
+        existing_data = sheets.values().get(
+            spreadsheetId=SPREADSHEET_ID,
+            range=summary_range
+        ).execute().get('values', [])
+
+        header_row = existing_data[0] if len(existing_data) > 0 else []
+        total_row = existing_data[1] if len(existing_data) > 1 else []
+
+        # Determine column index
+        if driver_name in header_row:
+            driver_col = header_row.index(driver_name)
+        else:
+            driver_col = len(header_row)
+            header_cell = f"Summary!{get_column_letter(driver_col + 1)}1"
+            hyperlink_formula = f'=HYPERLINK("#\'{warehouse}\'!A1", "{driver_name}")'
+            sheets.values().update(
+                spreadsheetId=SPREADSHEET_ID,
+                range=header_cell,
+                valueInputOption='USER_ENTERED',
+                body={'values': [[hyperlink_formula]]}
+            ).execute()
+
+        # Calculate new total
+        current_total = 0
+        if len(total_row) > driver_col:
+            try:
+                current_total = int(total_row[driver_col])
+            except ValueError:
+                current_total = 0
+
+        new_total = current_total + total_jobs
+
+        # Write total to the correct cell
+        total_cell = f"Summary!{get_column_letter(driver_col + 1)}2"
+        sheets.values().update(
+            spreadsheetId=SPREADSHEET_ID,
+            range=total_cell,
+            valueInputOption='RAW',
+            body={'values': [[new_total]]}
+        ).execute()
+
+        # Apply formatting to header row
+        format_request = {
+            'requests': [{
+                'repeatCell': {
+                    'range': {
+                        'sheetId': get_sheet_id(spreadsheet, "Summary"),
+                        'startRowIndex': 0,
+                        'endRowIndex': 1,
+                        'startColumnIndex': 0,
+                        'endColumnIndex': driver_col + 1
+                    },
+                    'cell': {
+                        'userEnteredFormat': {
+                            'textFormat': {
+                                'foregroundColor': {'red': 0.0, 'green': 0.0, 'blue': 1.0},
+                                'underline': True
+                            }
+                        }
+                    },
+                    'fields': 'userEnteredFormat.textFormat'
+                }
+            }]
+        }
+        sheets.batchUpdate(spreadsheetId=SPREADSHEET_ID, body=format_request).execute()
+
+        return True
+
+    except Exception as e:
+        logger.error(f"Error updating summary sheet: {str(e)}")
+        return False
+
 def log_driver_stats_to_google_sheets(
     date: str,
     driver_name: str,
@@ -259,6 +368,8 @@ def log_driver_stats_to_google_sheets(
 
         # Compute total jobs
         total_jobs = successful_deliveries + successful_collections
+
+        update_summary_sheet(service, driver_name, total_jobs, warehouse)
 
         # Prepare row
         row_data = [

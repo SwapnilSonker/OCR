@@ -40,7 +40,7 @@ python -m spacy download en_core_web_trf
 uvicorn mes:app --host 0.0.0.0 --port 8000 --reload
 
 # to run the client backend
-uvicorn new:appp --host 0.0.0.0 --port 8000 --reload 
+uvicorn new:app --host 0.0.0.0 --port 8000 --reload 
 ```
 
 ## Testing the API using cURL
