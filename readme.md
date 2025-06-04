@@ -40,8 +40,16 @@ python -m spacy download en_core_web_trf
 uvicorn mes:app --host 0.0.0.0 --port 8000 --reload
 
 # to run the client backend
+source .venv/bin/activate
 uvicorn new:app --host 0.0.0.0 --port 8000 --reload 
 ```
+
+# to use ngrok for the backend URL
+brew install ngrok
+ngrok http 8000
+
+# you can start server also on 
+ngrok http http://localhost:8080
 
 ## Testing the API using cURL
 ```
