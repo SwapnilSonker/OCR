@@ -45,6 +45,7 @@ uvicorn new:app --host 0.0.0.0 --port 8000 --reload
 ```
 
 # to use ngrok for the backend URL
+before starting the ngrok make sure that server is running
 brew install ngrok
 ngrok http 8000
 
